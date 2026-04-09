@@ -1,27 +1,16 @@
 import io
 import os
 from datetime import datetime
+from typing import List, Dict, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from openai import OpenAI
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-
-from db import (
-    supabase,
-    set_auth,
-    sign_in_user,
-    sign_out_user,
-    sign_up_user,
-    get_clients,
-    create_client_db,
-    save_audit,
-    get_recent_runs,
-)
+from supabase import Client, create_client
 
 # =========================================
 # PAGE CONFIG
@@ -34,10 +23,18 @@ st.set_page_config(
 )
 
 # =========================================
-# OPENAI
+# SECRETS / CLIENTS
 # =========================================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
+SUPABASE_URL = os.getenv("SUPABASE_URL", st.secrets.get("SUPABASE_URL", ""))
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", st.secrets.get("SUPABASE_ANON_KEY", ""))
+
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+supabase: Optional[Client] = (
+    create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    if SUPABASE_URL and SUPABASE_ANON_KEY
+    else None
+)
 
 # =========================================
 # SESSION STATE
@@ -54,13 +51,6 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
-
-# Keep auth alive on reruns
-active_user = set_auth()
-if active_user and not st.session_state.logged_in:
-    st.session_state.logged_in = True
-    st.session_state.user_email = getattr(active_user, "email", None)
-    st.session_state.user_id = getattr(active_user, "id", None)
 
 # =========================================
 # PREMIUM UI
@@ -294,6 +284,85 @@ Answer in concise, professional audit language.
     )
     return response.choices[0].message.content.strip()
 
+def sign_up_user(email: str, password: str):
+    if not supabase:
+        raise ValueError("Supabase is not configured.")
+    return supabase.auth.sign_up({"email": email, "password": password})
+
+def sign_in_user(email: str, password: str):
+    if not supabase:
+        raise ValueError("Supabase is not configured.")
+    return supabase.auth.sign_in_with_password({"email": email, "password": password})
+
+def sign_out_user():
+    if supabase:
+        supabase.auth.sign_out()
+
+def get_clients(user_id: str) -> List[Dict]:
+    if not supabase or not user_id:
+        return []
+    try:
+        response = (
+            supabase.table("clients")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data or []
+    except Exception:
+        return []
+
+def create_client_record(user_id: str, client_name: str, industry: str) -> bool:
+    if not supabase or not user_id:
+        return False
+    try:
+        supabase.table("clients").insert(
+            {
+                "user_id": user_id,
+                "client_name": client_name,
+                "industry": industry,
+            }
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+def save_audit_run(user_id: str, client_id: str, file_name: str, selected_metrics: List[str], anomaly_count: int, risk_label: str) -> bool:
+    if not supabase or not user_id or not client_id:
+        return False
+    try:
+        supabase.table("audit_runs").insert(
+            {
+                "user_id": user_id,
+                "client_id": client_id,
+                "file_name": file_name,
+                "selected_metrics": ", ".join(selected_metrics),
+                "anomaly_count": anomaly_count,
+                "risk_label": risk_label,
+            }
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+def get_recent_runs(user_id: str, client_id: Optional[str] = None) -> List[Dict]:
+    if not supabase or not user_id:
+        return []
+    try:
+        query = (
+            supabase.table("audit_runs")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+        )
+        if client_id:
+            query = query.eq("client_id", client_id)
+        response = query.limit(8).execute()
+        return response.data or []
+    except Exception:
+        return []
+
 # =========================================
 # AUTH SCREEN
 # =========================================
@@ -333,11 +402,9 @@ if not st.session_state.logged_in:
                     result = sign_in_user(email, password)
                     user = getattr(result, "user", None)
                     if user:
-                        # Critical: attach auth token to postgrest
-                        active_user = set_auth()
                         st.session_state.logged_in = True
-                        st.session_state.user_email = getattr(active_user, "email", email) if active_user else getattr(user, "email", email)
-                        st.session_state.user_id = getattr(active_user, "id", None) if active_user else getattr(user, "id", None)
+                        st.session_state.user_email = getattr(user, "email", email)
+                        st.session_state.user_id = getattr(user, "id", None)
                         st.rerun()
                     else:
                         st.error("Login failed.")
@@ -361,16 +428,6 @@ if not st.session_state.logged_in:
                         st.error(f"Signup error: {e}")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
-
-# refresh auth for RLS
-active_user = set_auth()
-if not active_user:
-    st.warning("Session expired. Please login again.")
-    st.session_state.clear()
-    st.rerun()
-
-st.session_state.user_email = getattr(active_user, "email", st.session_state.user_email)
-st.session_state.user_id = getattr(active_user, "id", st.session_state.user_id)
 
 # =========================================
 # SIDEBAR
@@ -402,21 +459,21 @@ with st.sidebar.expander("➕ Create new client", expanded=False):
         if not new_client_name.strip():
             st.error("Client name is required.")
         else:
-            try:
-                create_client_db(
-                    st.session_state.user_id,
-                    new_client_name.strip(),
-                    new_client_industry.strip(),
-                )
+            created = create_client_record(st.session_state.user_id, new_client_name.strip(), new_client_industry.strip())
+            if created:
                 st.success("Client created.")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Could not create client: {e}")
+            else:
+                st.error("Could not create client.")
 
 st.sidebar.markdown("---")
 if st.sidebar.button("Logout", use_container_width=True):
     sign_out_user()
-    st.session_state.clear()
+    st.session_state.logged_in = False
+    st.session_state.user_email = None
+    st.session_state.user_id = None
+    st.session_state.selected_client_id = None
+    st.session_state.selected_client_name = None
     st.rerun()
 
 # =========================================
@@ -559,17 +616,14 @@ for col in selected_cols:
 anomalies = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=["Date", "Value", "Z_Score", "Metric"])
 risk_label = "High" if len(anomalies) > 10 else "Medium" if len(anomalies) > 3 else "Low"
 
-try:
-    save_audit(
-        st.session_state.user_id,
-        st.session_state.selected_client_id,
-        uploaded_file.name,
-        ", ".join(selected_cols),
-        len(anomalies),
-        risk_label,
-    )
-except Exception:
-    pass
+save_audit_run(
+    st.session_state.user_id,
+    st.session_state.selected_client_id,
+    uploaded_file.name,
+    selected_cols,
+    len(anomalies),
+    risk_label,
+)
 
 st.markdown(
     f"""
@@ -759,6 +813,8 @@ elif page == "⚠️ Anomalies":
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("💬 Audit Assistant Chat")
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
 
         for msg in st.session_state.chat_history:
             role = "You" if msg["role"] == "user" else "ProAudit AI"
