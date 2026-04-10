@@ -1,8 +1,8 @@
 streamlit
 pandas
-numpy
 matplotlib
 plotly
 openai
 reportlab
+openpyxl
 supabase
