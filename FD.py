@@ -21,6 +21,8 @@ from db import (
     create_client_db,
     save_audit,
     get_recent_runs,
+    delete_client,
+    delete_team_member,
 )
 
 # =========================================
@@ -28,7 +30,6 @@ from db import (
 # =========================================
 st.set_page_config(
     page_title="ProAudit AI",
-    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -39,9 +40,6 @@ st.set_page_config(
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Use a Stripe Payment Link for now.
-# This is the safest way to add billing inside your current Streamlit app
-# without building webhook/backend enforcement yet.
 STRIPE_PAYMENT_LINK = os.getenv(
     "STRIPE_PAYMENT_LINK",
     st.secrets.get("STRIPE_PAYMENT_LINK", "")
@@ -64,7 +62,6 @@ for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# Keep auth alive on reruns
 active_user = set_auth()
 if active_user and not st.session_state.logged_in:
     st.session_state.logged_in = True
@@ -72,149 +69,320 @@ if active_user and not st.session_state.logged_in:
     st.session_state.user_id = getattr(active_user, "id", None)
 
 # =========================================
-# PREMIUM UI
+# UI DESIGN
 # =========================================
 st.markdown(
     """
     <style>
+    :root {
+        --bg: #0B1220;
+        --panel: #0F172A;
+        --panel-2: #111827;
+        --panel-3: #172554;
+        --line: rgba(148,163,184,0.16);
+        --text: #E5E7EB;
+        --muted: #94A3B8;
+        --primary: #2563EB;
+        --primary-2: #1D4ED8;
+        --success: #16A34A;
+        --danger: #DC2626;
+    }
+
     .stApp {
         background:
-            radial-gradient(circle at top left, rgba(99,102,241,0.18), transparent 28%),
-            radial-gradient(circle at top right, rgba(14,165,233,0.14), transparent 24%),
-            linear-gradient(180deg, #081120 0%, #0B1220 45%, #0E1424 100%);
-        color: #E5E7EB;
+            radial-gradient(circle at top right, rgba(37,99,235,0.16), transparent 22%),
+            radial-gradient(circle at top left, rgba(59,130,246,0.12), transparent 18%),
+            linear-gradient(180deg, #08101D 0%, #0B1220 45%, #0E1728 100%);
+        color: var(--text);
     }
 
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0B1220 0%, #0F172A 100%);
-        border-right: 1px solid rgba(148,163,184,0.15);
+        background: linear-gradient(180deg, #0A1020 0%, #0D1528 100%);
+        border-right: 1px solid var(--line);
     }
 
     .block-container {
+        max-width: 1340px;
         padding-top: 1.1rem;
-        padding-bottom: 1.6rem;
-        max-width: 1320px;
+        padding-bottom: 2rem;
     }
 
-    .hero-card {
-        background: linear-gradient(135deg, rgba(17,24,39,0.88), rgba(15,23,42,0.78));
-        border: 1px solid rgba(99,102,241,0.25);
+    .app-shell {
+        padding-top: 0.35rem;
+    }
+
+    .hero-shell {
+        background: linear-gradient(135deg, rgba(15,23,42,0.94), rgba(10,16,32,0.88));
+        border: 1px solid rgba(59,130,246,0.18);
         border-radius: 22px;
-        padding: 24px 28px;
-        box-shadow: 0 20px 50px rgba(0,0,0,0.28);
-        margin-bottom: 0.65rem;
+        padding: 28px 30px 22px 30px;
+        box-shadow: 0 24px 60px rgba(0,0,0,0.28);
+        margin-bottom: 16px;
     }
 
-    .section-card {
-        background: linear-gradient(180deg, rgba(15,23,42,0.90), rgba(17,24,39,0.88));
-        border: 1px solid rgba(148,163,184,0.14);
+    .hero-eyebrow {
+        display: inline-block;
+        font-size: 0.83rem;
+        font-weight: 600;
+        color: #BFDBFE;
+        background: rgba(37,99,235,0.14);
+        border: 1px solid rgba(59,130,246,0.20);
+        padding: 6px 10px;
+        border-radius: 999px;
+        margin-bottom: 14px;
+    }
+
+    .hero-title {
+        font-size: 3rem;
+        line-height: 1.02;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #F8FAFC;
+        margin-bottom: 10px;
+    }
+
+    .hero-subtitle {
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.65;
+        max-width: 920px;
+    }
+
+    .toolbar-card {
+        background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.94));
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+    }
+
+    .toolbar-grid {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .toolbar-meta {
+        color: #E2E8F0;
+        font-size: 0.98rem;
+        font-weight: 600;
+    }
+
+    .toolbar-meta span {
+        color: var(--muted);
+        font-weight: 500;
+    }
+
+    .section-wrap {
+        background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.94));
+        border: 1px solid var(--line);
         border-radius: 18px;
-        padding: 16px 16px 10px 16px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.20);
-        margin-bottom: 0.55rem;
+        box-shadow: 0 14px 34px rgba(0,0,0,0.18);
+        overflow: hidden;
+        margin-bottom: 14px;
     }
 
-    .mini-card {
-        background: linear-gradient(135deg, rgba(17,24,39,0.92), rgba(30,41,59,0.82));
-        border: 1px solid rgba(148,163,184,0.12);
-        border-radius: 16px;
+    .section-head {
+        padding: 16px 18px;
+        border-bottom: 1px solid rgba(148,163,184,0.10);
+        background: linear-gradient(180deg, rgba(30,41,59,0.35), rgba(15,23,42,0.18));
+    }
+
+    .section-title {
+        font-size: 1.08rem;
+        font-weight: 700;
+        color: #F8FAFC;
+        margin: 0;
+    }
+
+    .section-subtitle {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 0.92rem;
+    }
+
+    .section-body {
+        padding: 16px 18px 18px 18px;
+    }
+
+    .stack-item {
+        background: linear-gradient(180deg, rgba(17,24,39,0.98), rgba(15,23,42,0.92));
+        border: 1px solid rgba(148,163,184,0.10);
+        border-radius: 14px;
         padding: 14px 16px;
-        margin-bottom: 0.55rem;
+        margin-bottom: 10px;
     }
 
-    .insight-card {
-        background: linear-gradient(135deg, rgba(30,41,59,0.95), rgba(17,24,39,0.92));
-        border: 1px solid rgba(56,189,248,0.20);
-        border-left: 4px solid #6366F1;
-        border-radius: 16px;
-        padding: 18px 20px;
-        margin-top: 8px;
-        margin-bottom: 8px;
+    .stack-title {
+        color: #F8FAFC;
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 5px;
     }
 
-    .status-card {
-        background: linear-gradient(135deg, rgba(17,24,39,0.92), rgba(15,23,42,0.92));
-        border: 1px solid rgba(34,197,94,0.20);
-        border-radius: 16px;
-        padding: 14px 16px;
-        margin-bottom: 0.6rem;
-    }
-
-    .small-muted {
-        color: #94A3B8;
-        font-size: 0.95rem;
+    .stack-meta {
+        color: var(--muted);
+        font-size: 0.93rem;
         line-height: 1.55;
     }
 
-    .auth-wrap {
-        max-width: 1180px;
+    .metric-box {
+        background: linear-gradient(180deg, rgba(15,23,42,0.98), rgba(17,24,39,0.95));
+        border: 1px solid rgba(148,163,184,0.12);
+        border-radius: 16px;
+        padding: 16px 16px 14px 16px;
+        min-height: 108px;
+    }
+
+    .metric-label {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-bottom: 8px;
+        font-weight: 600;
+    }
+
+    .metric-value {
+        color: #F8FAFC;
+        font-size: 2.1rem;
+        line-height: 1;
+        font-weight: 800;
+    }
+
+    .metric-note {
+        margin-top: 10px;
+        color: #BFDBFE;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(22,163,74,0.12);
+        color: #DCFCE7;
+        border: 1px solid rgba(22,163,74,0.18);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+    .small-muted {
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.6;
+    }
+
+    .auth-shell {
+        max-width: 1160px;
         margin: 1rem auto 0 auto;
     }
 
     .auth-title {
         text-align: center;
-        font-size: 3rem;
+        font-size: 2.9rem;
         font-weight: 800;
-        margin-bottom: 0.25rem;
+        margin-bottom: 0.35rem;
+        color: #F8FAFC;
     }
 
     .auth-subtitle {
         text-align: center;
-        color: #94A3B8;
-        margin-bottom: 1.5rem;
-        font-size: 1.05rem;
+        color: var(--muted);
+        margin-bottom: 1.6rem;
+        font-size: 1.02rem;
     }
 
-    .feature-bullet {
+    .auth-feature {
         color: #CBD5E1;
-        margin-bottom: 0.65rem;
-        font-size: 1rem;
+        margin-bottom: 0.7rem;
+        font-size: 0.98rem;
     }
 
-    div[data-testid="metric-container"] {
-        background: linear-gradient(135deg, rgba(17,24,39,0.92), rgba(30,41,59,0.82));
-        border: 1px solid rgba(99,102,241,0.22);
-        padding: 18px;
+    .top-user-card {
+        background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.94));
+        border: 1px solid var(--line);
         border-radius: 18px;
-        box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+        padding: 16px;
+        min-height: 126px;
     }
 
-    div[data-testid="metric-container"] label {
-        color: #A5B4FC !important;
+    .top-user-label {
+        color: var(--muted);
+        font-size: 0.86rem;
+        margin-bottom: 10px;
+    }
+
+    .top-user-email {
+        color: #F8FAFC;
+        font-size: 1rem;
+        font-weight: 700;
+        word-break: break-word;
     }
 
     .stButton > button, .stDownloadButton > button {
-        border-radius: 12px !important;
-        border: none !important;
-        background: linear-gradient(90deg, #6366F1, #8B5CF6) !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(37,99,235,0.18) !important;
+        background: linear-gradient(180deg, #2563EB, #1D4ED8) !important;
         color: white !important;
         font-weight: 600 !important;
-        box-shadow: 0 8px 20px rgba(99,102,241,0.28);
+        box-shadow: 0 10px 24px rgba(37,99,235,0.22);
+        padding-top: 0.55rem !important;
+        padding-bottom: 0.55rem !important;
+    }
+
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        background: linear-gradient(180deg, #1D4ED8, #1E40AF) !important;
     }
 
     .stLinkButton > a {
-        border-radius: 12px !important;
-        border: none !important;
-        background: linear-gradient(90deg, #6366F1, #8B5CF6) !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(37,99,235,0.18) !important;
+        background: linear-gradient(180deg, #2563EB, #1D4ED8) !important;
         color: white !important;
         font-weight: 600 !important;
         text-decoration: none !important;
-        padding: 0.7rem 1rem !important;
+        padding: 0.72rem 1rem !important;
         display: inline-block !important;
     }
 
-    .stTextInput input, .stTextArea textarea {
-        background-color: #1F2937 !important;
-        border: 1px solid #374151 !important;
+    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
+        background-color: #0F172A !important;
+        border: 1px solid #223046 !important;
         border-radius: 10px !important;
         color: white !important;
     }
 
     div[data-testid="stFileUploader"] {
-        background: rgba(17,24,39,0.78);
-        border: 1px dashed rgba(99,102,241,0.35);
+        background: rgba(15,23,42,0.82);
+        border: 1px dashed rgba(59,130,246,0.28);
         border-radius: 16px;
-        padding: 8px;
+        padding: 10px;
+    }
+
+    .sidebar-brand {
+        font-size: 1.3rem;
+        font-weight: 800;
+        color: #F8FAFC;
+        margin-bottom: 4px;
+    }
+
+    .sidebar-caption {
+        color: var(--muted);
+        font-size: 0.92rem;
+        margin-bottom: 14px;
+    }
+
+    .danger-btn button {
+        background: linear-gradient(180deg, #B91C1C, #991B1B) !important;
+        border-color: rgba(239,68,68,0.22) !important;
+    }
+
+    .st-emotion-cache-13ln4jf, .st-emotion-cache-1gulkj5 {
+        border-radius: 12px !important;
     }
     </style>
     """,
@@ -367,41 +535,79 @@ def get_billing_status(user_id: str):
     except Exception:
         return None
 
+
+def render_section_start(title: str, subtitle: str = ""):
+    st.markdown(
+        f"""
+        <div class="section-wrap">
+            <div class="section-head">
+                <div class="section-title">{title}</div>
+                {f'<div class="section-subtitle">{subtitle}</div>' if subtitle else ''}
+            </div>
+            <div class="section-body">
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_end():
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+def render_stack_item(title: str, body: str):
+    st.markdown(
+        f"""
+        <div class="stack-item">
+            <div class="stack-title">{title}</div>
+            <div class="stack-meta">{body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # =========================================
 # AUTH SCREEN
 # =========================================
 if not st.session_state.logged_in:
-    st.markdown('<div class="auth-wrap">', unsafe_allow_html=True)
-    st.markdown('<div class="auth-title">🧠 ProAudit AI</div>', unsafe_allow_html=True)
-    st.markdown('<div class="auth-subtitle">Premium audit intelligence platform with anomaly detection, AI insights, and downloadable workpapers.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
+    st.markdown('<div class="auth-title">ProAudit AI</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="auth-subtitle">Modern audit intelligence for collaborative analytics, insights, and export-ready workpapers.</div>',
+        unsafe_allow_html=True,
+    )
 
-    left, right = st.columns([1.1, 1], gap="large")
+    left, right = st.columns([1.15, 1], gap="large")
 
     with left:
         st.markdown(
             """
-            <div class="hero-card">
-                <h1 style="margin-top:0; line-height:1.15;">Enterprise-style<br>Audit Analytics</h1>
-                <p class="small-muted">
-                    Detect financial anomalies, generate AI-supported audit commentary,
-                    and export professional PDF and Excel outputs from one dashboard.
-                </p>
-                <div class="feature-bullet">• Multi-client workspace</div>
-                <div class="feature-bullet">• GPT audit copilot</div>
-                <div class="feature-bullet">• Team collaboration</div>
-                <div class="feature-bullet">• Billing-ready SaaS structure</div>
+            <div class="hero-shell">
+                <div class="hero-eyebrow">Trusted workflow for modern audit teams</div>
+                <div class="hero-title">Audit Smarter,<br>Not Harder</div>
+                <div class="hero-subtitle">
+                    Manage client workspaces, detect anomalies, generate GPT-based audit commentary,
+                    and export professional reports from a secure, collaboration-ready environment.
+                </div>
+                <div style="margin-top:18px;">
+                    <div class="auth-feature">• Multi-client workspaces</div>
+                    <div class="auth-feature">• AI-supported audit analysis</div>
+                    <div class="auth-feature">• Team collaboration and billing</div>
+                    <div class="auth-feature">• Exportable PDF and Excel reports</div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
     with right:
-        login_tab, signup_tab = st.tabs(["Login", "Create account"])
+        render_section_start("Account Access", "Sign in or create a workspace account")
+        login_tab, signup_tab = st.tabs(["Sign in", "Create account"])
 
         with login_tab:
             email = st.text_input("Work email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
-            if st.button("Login", use_container_width=True):
+            if st.button("Sign in", use_container_width=True):
                 try:
                     result = sign_in_user(email, password)
                     user = getattr(result, "user", None)
@@ -412,9 +618,9 @@ if not st.session_state.logged_in:
                         st.session_state.user_id = getattr(active_user, "id", None) if active_user else getattr(user, "id", None)
                         st.rerun()
                     else:
-                        st.error("Login failed.")
+                        st.error("Sign-in failed.")
                 except Exception as e:
-                    st.error(f"Login error: {e}")
+                    st.error(f"Sign-in error: {e}")
 
         with signup_tab:
             new_email = st.text_input("Work email", key="signup_email")
@@ -428,9 +634,11 @@ if not st.session_state.logged_in:
                 else:
                     try:
                         sign_up_user(new_email, new_password)
-                        st.success("Account created. Verify your email first if confirmation is enabled.")
+                        st.success("Account created. Verify your email if confirmation is enabled.")
                     except Exception as e:
                         st.error(f"Signup error: {e}")
+        render_section_end()
+
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
@@ -447,57 +655,56 @@ st.session_state.user_id = getattr(active_user, "id", st.session_state.user_id)
 # =========================================
 # SIDEBAR
 # =========================================
-st.sidebar.markdown("## 🧠 ProAudit AI")
-st.sidebar.caption("Audit Intelligence Platform")
+st.sidebar.markdown('<div class="sidebar-brand">ProAudit AI</div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="sidebar-caption">Audit Intelligence Platform</div>', unsafe_allow_html=True)
 
 page = st.sidebar.radio(
-    "Go to",
-    ["📊 Dashboard", "⚠️ Anomalies", "📄 Reports", "👥 Team", "💳 Billing"]
+    "Navigation",
+    ["Dashboard", "Anomalies", "Reports", "Team", "Billing"]
 )
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"Logged in as: **{st.session_state.user_email}**")
+st.sidebar.markdown("### Workspace")
 
-st.sidebar.markdown("### 🏢 Workspace")
-all_clients = get_clients(st.session_state.user_id)
-client_name_map = {client["client_name"]: client["id"] for client in all_clients if "client_name" in client and "id" in client}
+clients = get_clients(st.session_state.user_id)
 
-if all_clients:
-    default_client_name = (
-        st.session_state.selected_client_name
-        if st.session_state.selected_client_name in client_name_map
-        else all_clients[0]["client_name"]
-    )
-    selected_client_name = st.sidebar.selectbox(
-        "Select client",
-        options=list(client_name_map.keys()),
-        index=list(client_name_map.keys()).index(default_client_name),
-    )
-    st.session_state.selected_client_name = selected_client_name
-    st.session_state.selected_client_id = client_name_map[selected_client_name]
+if clients:
+    client_map = {c["client_name"]: c["id"] for c in clients}
+    selected_names = list(client_map.keys())
+
+    default_index = 0
+    if st.session_state.selected_client_name in selected_names:
+        default_index = selected_names.index(st.session_state.selected_client_name)
+
+    selected = st.sidebar.selectbox("Client", selected_names, index=default_index)
+    st.session_state.selected_client_id = client_map[selected]
+    st.session_state.selected_client_name = selected
+
+    col1, col2 = st.sidebar.columns([3, 1])
+    with col2:
+        if st.button("Delete", key="delete_selected_client"):
+            delete_client(st.session_state.selected_client_id)
+            st.session_state.selected_client_id = None
+            st.session_state.selected_client_name = None
+            st.success("Client deleted")
+            st.rerun()
 else:
-    st.sidebar.info("No clients yet. Create your first client below.")
+    st.sidebar.info("No clients found")
 
-with st.sidebar.expander("➕ Create new client", expanded=False):
-    new_client_name = st.text_input("Client name", key="new_client_name")
-    new_client_industry = st.text_input("Industry", key="new_client_industry")
-    if st.button("Add client", use_container_width=True):
-        if not new_client_name.strip():
-            st.error("Client name is required.")
+with st.sidebar.expander("Create client", expanded=False):
+    name = st.text_input("Name", key="client_name_input")
+    ind = st.text_input("Industry", key="client_industry_input")
+
+    if st.button("Add client", key="add_client_btn"):
+        if not name.strip():
+            st.error("Enter a client name")
         else:
-            try:
-                create_client_db(
-                    st.session_state.user_id,
-                    new_client_name.strip(),
-                    new_client_industry.strip(),
-                )
-                st.success("Client created.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not create client: {e}")
+            create_client_db(st.session_state.user_id, name.strip(), ind.strip())
+            st.rerun()
 
 st.sidebar.markdown("---")
-if st.sidebar.button("Logout", use_container_width=True):
+if st.sidebar.button("Logout", key="sidebar_logout"):
     sign_out_user()
     st.session_state.clear()
     st.rerun()
@@ -505,15 +712,18 @@ if st.sidebar.button("Logout", use_container_width=True):
 # =========================================
 # HEADER
 # =========================================
-top_left, top_right = st.columns([6, 1])
+st.markdown('<div class="app-shell">', unsafe_allow_html=True)
+
+top_left, top_right = st.columns([5.2, 1.2], gap="large")
 with top_left:
     st.markdown(
         """
-        <div class="hero-card">
-            <div style="font-size:3rem;font-weight:800;line-height:1.05;">ProAudit AI</div>
-            <div style="font-size:1.18rem;font-weight:700;margin-top:0.8rem;">Real-Time Audit Intelligence Platform</div>
-            <div class="small-muted" style="margin-top:0.8rem;">
-                Detect anomalies • Generate GPT insights • Export audit-ready reports
+        <div class="hero-shell">
+            <div class="hero-eyebrow">Real-time audit intelligence for modern firms</div>
+            <div class="hero-title">Audit Smarter,<br>Not Harder</div>
+            <div class="hero-subtitle">
+                Detect anomalies, generate GPT insights, manage collaboration, and produce
+                export-ready audit outputs from a single enterprise workspace.
             </div>
         </div>
         """,
@@ -522,25 +732,28 @@ with top_left:
 with top_right:
     st.markdown(
         f"""
-        <div class="mini-card" style="text-align:center; margin-top:0.15rem;">
-            <div class="small-muted">Workspace user</div>
-            <div style="font-weight:700; margin-top:0.25rem; word-break:break-word;">{st.session_state.user_email}</div>
+        <div class="top-user-card">
+            <div class="top-user-label">Workspace user</div>
+            <div class="top-user-email">{st.session_state.user_email}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-if not st.session_state.selected_client_id and page in ["📊 Dashboard", "⚠️ Anomalies", "📄 Reports", "👥 Team"]:
-    st.warning("Create and select a client workspace from the sidebar to continue.")
+if not st.session_state.selected_client_id and page in ["Dashboard", "Anomalies", "Reports", "Team"]:
+    render_section_start("No workspace selected", "Create or select a client from the sidebar to continue")
+    st.info("Select a workspace before using analysis, collaboration, or reporting features.")
+    render_section_end()
     st.stop()
 
 if st.session_state.selected_client_name:
     st.markdown(
         f"""
-        <div class="mini-card">
-            <b>Workspace:</b> {st.session_state.selected_client_name}
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            <b>User:</b> {st.session_state.user_email}
+        <div class="toolbar-card">
+            <div class="toolbar-grid">
+                <div class="toolbar-meta">Workspace <span>{st.session_state.selected_client_name}</span></div>
+                <div class="toolbar-meta">User <span>{st.session_state.user_email}</span></div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -549,108 +762,86 @@ if st.session_state.selected_client_name:
 # =========================================
 # TEAM PAGE
 # =========================================
-if page == "👥 Team":
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("👥 Team Collaboration")
+if page == "Team":
+    render_section_start("Team Collaboration", "Manage member access for the selected workspace")
+    col1, col2 = st.columns([1.1, 1], gap="large")
 
     members = get_team_members(st.session_state.selected_client_id)
 
-    c1, c2 = st.columns([1.1, 1], gap="large")
-
-    with c1:
-        st.markdown("### Current Members")
+    with col1:
+        st.subheader("Current Members")
         if members:
-            for member in members:
-                st.markdown(
-                    f"""
-                    <div class="mini-card">
-                        <b>{member.get('member_email', 'Unknown')}</b><br>
-                        <span class="small-muted">Role: {member.get('role', 'viewer')}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            for m in members:
+                a, b = st.columns([4, 1], gap="small")
+                with a:
+                    render_stack_item(m["member_email"], f"Role: {m['role']}")
+                with b:
+                    st.write("")
+                    st.write("")
+                    if st.button("Remove", key=f"remove_member_{m['id']}"):
+                        delete_team_member(m["id"])
+                        st.rerun()
         else:
             st.info("No team members added yet.")
 
-    with c2:
-        st.markdown("### Invite Member")
-        invite_email = st.text_input("Member email")
-        invite_role = st.selectbox("Role", ["viewer", "auditor", "admin"])
-        if st.button("Send Invite", use_container_width=True):
-            if not invite_email.strip():
-                st.error("Enter a member email.")
-            else:
-                try:
-                    invite_team_member(
-                        st.session_state.selected_client_id,
-                        st.session_state.user_id,
-                        invite_email.strip(),
-                        invite_role,
-                    )
-                    st.success("Team member added.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not add member: {e}")
+    with col2:
+        st.subheader("Invite Member")
+        invite_email = st.text_input("Email address", key="invite_email")
+        invite_role = st.selectbox("Role", ["viewer", "auditor", "admin"], key="invite_role")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        if st.button("Add member", use_container_width=True, key="invite_member_btn"):
+            if not invite_email.strip():
+                st.error("Enter an email address.")
+            else:
+                invite_team_member(
+                    st.session_state.selected_client_id,
+                    st.session_state.user_id,
+                    invite_email.strip(),
+                    invite_role,
+                )
+                st.success("Member added")
+                st.rerun()
+
+        st.caption("This currently stores collaboration access in the database. Email delivery needs SMTP or auth invite flow.")
+
+    render_section_end()
     st.stop()
 
 # =========================================
 # BILLING PAGE
 # =========================================
-if page == "💳 Billing":
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("💳 Billing & Plan")
+if page == "Billing":
+    render_section_start("Billing and Plan", "Workspace subscription and upgrade path")
 
     billing = get_billing_status(st.session_state.user_id)
-
     plan_name = billing.get("plan_name", "Free") if billing else "Free"
     plan_status = billing.get("status", "inactive") if billing else "inactive"
 
     b1, b2 = st.columns([1.05, 1], gap="large")
 
     with b1:
-        st.markdown(
-            f"""
-            <div class="mini-card">
-                <h3 style="margin-top:0;">Current Plan</h3>
-                <div class="small-muted">Plan: <b>{plan_name}</b></div>
-                <div class="small-muted">Status: <b>{plan_status}</b></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        render_stack_item("Current Plan", f"Plan: {plan_name}<br>Status: {plan_status}")
 
     with b2:
-        st.markdown(
-            """
-            <div class="mini-card">
-                <h3 style="margin-top:0;">Upgrade Features</h3>
-                <div class="small-muted">• Unlimited audit runs</div>
-                <div class="small-muted">• Team collaboration</div>
-                <div class="small-muted">• Priority GPT insights</div>
-                <div class="small-muted">• Advanced exports</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_stack_item(
+            "Upgrade Features",
+            "Unlimited audit runs<br>Team collaboration<br>Priority GPT insights<br>Advanced exports"
         )
 
     if STRIPE_PAYMENT_LINK:
         st.link_button("Upgrade with Stripe", STRIPE_PAYMENT_LINK, use_container_width=True)
     else:
-        st.info("Add STRIPE_PAYMENT_LINK to Streamlit secrets to enable hosted billing checkout.")
+        st.info("Add STRIPE_PAYMENT_LINK to Streamlit secrets to enable hosted checkout.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    render_section_end()
     st.stop()
 
 # =========================================
 # FILE UPLOAD
 # =========================================
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("📂 Step 1: Upload Financial Data")
+render_section_start("Upload Financial Data", "Start a new analysis run for the selected workspace")
 uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-st.markdown("</div>", unsafe_allow_html=True)
+render_section_end()
 
 if not uploaded_file:
     recent_runs = get_recent_runs(st.session_state.user_id, st.session_state.selected_client_id)
@@ -658,8 +849,7 @@ if not uploaded_file:
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("📌 Client Overview")
+        render_section_start("Client Overview", "Selected workspace summary")
         st.markdown(
             f"""
             <div class="small-muted">
@@ -669,31 +859,23 @@ if not uploaded_file:
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
     with c2:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("🕒 Recent Activity")
+        render_section_start("Recent Activity", "Latest saved audit runs")
         if recent_runs:
             for run in recent_runs[:5]:
-                st.markdown(
-                    f"""
-                    <div class="mini-card">
-                    <b>{run.get('file_name', 'Unknown file')}</b><br>
-                    <span class="small-muted">Risk: {run.get('risk_label', 'N/A')} • {run.get('anomaly_count', 0)} anomalies</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                render_stack_item(
+                    run.get("file_name", "Unknown file"),
+                    f"Risk: {run.get('risk_label', 'N/A')} • {run.get('anomaly_count', 0)} anomalies",
                 )
         else:
-            st.info("🚀 Upload a CSV to start audit analysis for this client workspace.")
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.info("Upload a CSV to start audit analysis for this workspace.")
+        render_section_end()
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("📈 Financial Trends")
-    st.info("Charts will appear here after data upload.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
+    render_section_start("Financial Trends", "Charts will appear after data upload")
+    st.info("Upload a dataset to visualize trend and anomaly behavior.")
+    render_section_end()
     st.stop()
 
 # =========================================
@@ -704,12 +886,11 @@ df = clean_dataframe(df)
 df = safe_date_column(df)
 df = df.sort_values(by="Date")
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("⚙️ Step 2: Select Financial Metrics")
-
+render_section_start("Select Financial Metrics", "Choose the columns to analyze")
 numeric_cols = df.select_dtypes(include="number").columns.tolist()
 if len(numeric_cols) == 0:
     st.error("No numeric columns found in this dataset.")
+    render_section_end()
     st.stop()
 
 default_metrics = numeric_cols[:2] if len(numeric_cols) >= 2 else numeric_cols[:1]
@@ -720,8 +901,9 @@ selected_cols = st.multiselect(
 )
 if len(selected_cols) == 0:
     st.warning("Please select at least one metric.")
+    render_section_end()
     st.stop()
-st.markdown("</div>", unsafe_allow_html=True)
+render_section_end()
 
 results = []
 for col in selected_cols:
@@ -764,37 +946,70 @@ if st.session_state.last_saved_run_key != current_run_key:
         st.warning(f"Run not saved: {e}")
 
 st.markdown(
-    f"""
-    <div class="status-card">
-        <span style="font-weight:700;">✅ System Ready</span>
-        <span class="small-muted"> — File loaded successfully: {uploaded_file.name}</span>
+    """
+    <div class="status-pill">
+        Analysis Ready
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("📊 Records", f"{len(df):,}")
-k2.metric("⚠️ Anomalies", len(anomalies), delta="High" if len(anomalies) > 10 else "Low")
-k3.metric("📈 Metrics", len(selected_cols))
-risk_icon = "🔴" if risk_label == "High" else "🟡" if risk_label == "Medium" else "🟢"
-k4.metric("🔥 Risk Level", f"{risk_icon} {risk_label}")
+m1, m2, m3, m4 = st.columns(4, gap="medium")
+with m1:
+    st.markdown(
+        f"""
+        <div class="metric-box">
+            <div class="metric-label">Records</div>
+            <div class="metric-value">{len(df):,}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with m2:
+    st.markdown(
+        f"""
+        <div class="metric-box">
+            <div class="metric-label">Anomalies</div>
+            <div class="metric-value">{len(anomalies):,}</div>
+            <div class="metric-note">{'Elevated risk' if len(anomalies) > 10 else 'Under control'}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with m3:
+    st.markdown(
+        f"""
+        <div class="metric-box">
+            <div class="metric-label">Metrics Selected</div>
+            <div class="metric-value">{len(selected_cols)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with m4:
+    st.markdown(
+        f"""
+        <div class="metric-box">
+            <div class="metric-label">Risk Level</div>
+            <div class="metric-value">{risk_label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # =========================================
 # DASHBOARD
 # =========================================
-if page == "📊 Dashboard":
+if page == "Dashboard":
     d1, d2 = st.columns([1.05, 1], gap="large")
 
     with d1:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("Dataset Preview")
+        render_section_start("Dataset Preview", "Source rows loaded for analysis")
         st.dataframe(df.head(12), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
     with d2:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("Workspace Summary")
+        render_section_start("Workspace Summary", "Active file and selection context")
         st.markdown(
             f"""
             <div class="small-muted">
@@ -807,54 +1022,46 @@ if page == "📊 Dashboard":
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
     i1, i2 = st.columns(2, gap="large")
     with i1:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("📌 Key Insights")
+        render_section_start("Key Insights", "High-level interpretation of the current run")
         highest_metric = selected_cols[0] if selected_cols else "N/A"
         st.markdown(
             f"""
             <div class="small-muted">
-            • Total anomalies detected: <b>{len(anomalies)}</b><br>
-            • Highest focus metric: <b>{highest_metric}</b><br>
-            • Risk level: <b>{risk_label}</b><br>
-            • Workspace: <b>{st.session_state.selected_client_name}</b>
+            Total anomalies detected: <b>{len(anomalies)}</b><br>
+            Highest focus metric: <b>{highest_metric}</b><br>
+            Risk level: <b>{risk_label}</b><br>
+            Workspace: <b>{st.session_state.selected_client_name}</b>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
     with i2:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("🕒 Recent Activity")
+        render_section_start("Recent Activity", "Most recent saved audit runs")
         recent_runs = get_recent_runs(st.session_state.user_id, st.session_state.selected_client_id)
         if recent_runs:
             for run in recent_runs[:5]:
-                st.markdown(
-                    f"""
-                    <div class="mini-card">
-                    <b>{run.get('file_name', 'Unknown file')}</b><br>
-                    <span class="small-muted">Risk: {run.get('risk_label', 'N/A')} • {run.get('anomaly_count', 0)} anomalies</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                render_stack_item(
+                    run.get("file_name", "Unknown file"),
+                    f"Risk: {run.get('risk_label', 'N/A')} • {run.get('anomaly_count', 0)} anomalies"
                 )
         else:
             st.info("No saved runs yet.")
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("📈 Financial Trend Analysis")
+    render_section_start("Financial Trend Analysis", "Trend comparison across selected metrics")
     fig, ax = plt.subplots(figsize=(12, 5))
     fig.patch.set_facecolor("#0B1220")
     ax.set_facecolor("#111827")
-    colors = ["#6366F1", "#22C55E", "#F59E0B", "#EF4444", "#14B8A6", "#38BDF8"]
+    colors = ["#2563EB", "#06B6D4", "#22C55E", "#F59E0B", "#EF4444", "#8B5CF6"]
 
     for i, col in enumerate(selected_cols):
-        ax.plot(df["Date"], df[col], linewidth=2.6, color=colors[i % len(colors)], label=col)
+        ax.plot(df["Date"], df[col], linewidth=2.3, color=colors[i % len(colors)], label=col)
 
     ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="white")
     ax.set_title("Metric Trends Over Time", color="white", fontsize=14)
@@ -862,17 +1069,16 @@ if page == "📊 Dashboard":
     for spine in ax.spines.values():
         spine.set_color("#374151")
     st.pyplot(fig, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    render_section_end()
 
 # =========================================
 # ANOMALIES
 # =========================================
-elif page == "⚠️ Anomalies":
+elif page == "Anomalies":
     a1, a2 = st.columns([1.3, 0.95], gap="large")
 
     with a1:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("Detected Anomalies")
+        render_section_start("Detected Anomalies", "Flagged outliers based on z-score threshold")
         if anomalies.empty:
             st.success("No anomalies detected with the current threshold.")
         else:
@@ -885,7 +1091,7 @@ elif page == "⚠️ Anomalies":
             fig, ax = plt.subplots(figsize=(12, 5))
             fig.patch.set_facecolor("#0B1220")
             ax.set_facecolor("#111827")
-            ax.plot(df["Date"], df[metric_choice], label=metric_choice, linewidth=2.6, color="#6366F1")
+            ax.plot(df["Date"], df[metric_choice], label=metric_choice, linewidth=2.4, color="#2563EB")
 
             if not metric_anomalies.empty:
                 ax.scatter(metric_anomalies["Date"], metric_anomalies["Value"], label="Anomalies", s=60, color="#EF4444")
@@ -896,12 +1102,10 @@ elif page == "⚠️ Anomalies":
             for spine in ax.spines.values():
                 spine.set_color("#374151")
             st.pyplot(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
     with a2:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("🤖 GPT Audit Insight")
-
+        render_section_start("GPT Audit Insight", "AI-generated commentary for the selected anomaly focus")
         if anomalies.empty:
             st.info("Upload data with anomalies to generate AI insight.")
         else:
@@ -918,15 +1122,7 @@ elif page == "⚠️ Anomalies":
                     )
                 st.session_state.last_ai_text = ai_text
 
-                st.markdown(
-                    f"""
-                    <div class="insight-card">
-                        <h4 style="margin-top:0;">🤖 GPT Audit Insight</h4>
-                        <p style="margin-bottom:0; white-space: pre-wrap;">{ai_text}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                render_stack_item("AI Commentary", ai_text.replace("\n", "<br>"))
 
                 pdf_bytes = create_pdf_report(
                     username=st.session_state.user_email or "Unknown User",
@@ -938,7 +1134,7 @@ elif page == "⚠️ Anomalies":
                 )
 
                 st.download_button(
-                    "📥 Download Audit Report (PDF)",
+                    "Download Audit Report (PDF)",
                     data=pdf_bytes,
                     file_name=f"{st.session_state.selected_client_name}_audit_report.pdf",
                     mime="application/pdf",
@@ -946,19 +1142,16 @@ elif page == "⚠️ Anomalies":
                 )
             except Exception as e:
                 st.error(f"AI Error: {e}")
+        render_section_end()
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("💬 Audit Assistant Chat")
-
+        render_section_start("Audit Assistant", "Ask questions about the uploaded dataset and risk profile")
         for msg in st.session_state.chat_history:
             role = "You" if msg["role"] == "user" else "ProAudit AI"
             st.markdown(f"**{role}:** {msg['content']}")
 
-        question = st.text_area("Ask about the uploaded data, anomalies, or audit risk", height=100)
+        question = st.text_area("Question", height=100)
 
-        if st.button("Ask assistant", use_container_width=True):
+        if st.button("Ask Assistant", use_container_width=True):
             if not question.strip():
                 st.warning("Enter a question first.")
             else:
@@ -973,15 +1166,13 @@ elif page == "⚠️ Anomalies":
                     st.rerun()
                 except Exception as e:
                     st.error(f"Assistant error: {e}")
-
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_section_end()
 
 # =========================================
 # REPORTS
 # =========================================
-elif page == "📄 Reports":
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Export Reports")
+elif page == "Reports":
+    render_section_start("Export Reports", "Download structured outputs for audit documentation")
 
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -1002,7 +1193,7 @@ elif page == "📄 Reports":
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
     st.download_button(
-        "📥 Download Excel Workpaper",
+        "Download Excel Workpaper",
         data=excel_buffer.getvalue(),
         file_name=f"{st.session_state.selected_client_name}_audit_workpaper.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1017,6 +1208,6 @@ elif page == "📄 Reports":
         st.dataframe(recent_df[show_cols], use_container_width=True)
 
     if not anomalies.empty:
-        st.info("Go to the Anomalies page to generate and download the AI PDF report.")
+        st.info("Use the Anomalies page to generate and download the AI PDF report.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    render_section_end()
