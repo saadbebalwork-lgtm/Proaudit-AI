@@ -24,6 +24,7 @@ from db import (
     get_recent_runs,
     get_team_members,
     invite_team_member,
+    invite_user_by_email,
     delete_team_member,
     get_billing_status,
     update_billing,
@@ -695,48 +696,82 @@ if st.session_state.selected_client_name:
         """,
         unsafe_allow_html=True,
     )
-
+## Team
 if page == "Team":
     render_section_start("Team Collaboration", "Manage member access for the selected workspace")
+
     col1, col2 = st.columns([1.1, 1], gap="large")
 
     members = get_team_members(st.session_state.selected_client_id)
 
+    # =========================
+    # LEFT: CURRENT MEMBERS
+    # =========================
     with col1:
         st.subheader("Current Members")
+
         if members:
             for m in members:
                 a, b = st.columns([4, 1], gap="small")
+
                 with a:
-                    render_stack_item(m["member_email"], f"Role: {m['role']}")
+                    render_stack_item(
+                        m["member_email"],
+                        f"Role: {m['role']}"
+                    )
+
                 with b:
                     st.write("")
                     st.write("")
+
                     if st.button("Remove", key=f"remove_member_{m['id']}"):
-                        delete_team_member(m["id"])
-                        st.rerun()
+                        try:
+                            delete_team_member(m["id"])
+                            st.success("Member removed")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error removing member: {e}")
         else:
             st.info("No team members added yet.")
 
+    # =========================
+    # RIGHT: INVITE MEMBER
+    # =========================
     with col2:
         st.subheader("Invite Member")
-        invite_email = st.text_input("Email address", key="invite_email")
-        invite_role = st.selectbox("Role", ["viewer", "auditor", "admin"], key="invite_role")
 
-        if st.button("Add member", use_container_width=True, key="invite_member_btn"):
+        invite_email = st.text_input("Email address", key="invite_email")
+        invite_role = st.selectbox(
+            "Role",
+            ["viewer", "auditor", "admin"],
+            key="invite_role"
+        )
+
+        if st.button("Send Invite", use_container_width=True, key="invite_member_btn"):
+
             if not invite_email.strip():
                 st.error("Enter an email address.")
-            else:
-                invite_team_member(
-                    st.session_state.selected_client_id,
-                    st.session_state.user_id,
-                    invite_email.strip(),
-                    invite_role,
-                )
-                st.success("Member added")
-                st.rerun()
 
-        st.caption("This stores collaboration access in the database. Email delivery needs SMTP or auth invite flow.")
+            else:
+                try:
+                    # STEP 1: Send REAL Supabase invite email
+                    invite_user_by_email(invite_email.strip())
+
+                    # STEP 2: Save in your DB
+                    invite_team_member(
+                        st.session_state.selected_client_id,
+                        st.session_state.user_id,
+                        invite_email.strip(),
+                        invite_role,
+                    )
+
+                    st.success("Invite sent successfully")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Invite failed: {e}")
+
+        st.caption("Invited users will receive an email to join the workspace.")
 
     render_section_end()
     st.stop()

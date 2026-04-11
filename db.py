@@ -2,28 +2,46 @@ import os
 import streamlit as st
 from supabase import create_client, Client
 
+# =========================
+# CONFIG
+# =========================
 SUPABASE_URL = os.getenv("SUPABASE_URL", st.secrets.get("SUPABASE_URL", ""))
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", st.secrets.get("SUPABASE_KEY", ""))
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", st.secrets.get("SUPABASE_KEY", ""))  # anon key
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", st.secrets.get("SUPABASE_SERVICE_KEY", ""))  # 🔥 required for invites
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY in secrets/environment.")
+    raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY.")
 
+if not SUPABASE_SERVICE_KEY:
+    raise ValueError("Missing SUPABASE_SERVICE_KEY (needed for team invites).")
+
+# ✅ Public client (used everywhere)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# 🔥 Admin client (used ONLY for secure operations like invite)
+supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+
+# =========================
+# AUTH
+# =========================
 def set_auth():
     try:
         session_response = supabase.auth.get_session()
         session = getattr(session_response, "session", None) or session_response
+
         if session and getattr(session, "access_token", None):
             try:
                 supabase.postgrest.auth(session.access_token)
             except Exception:
                 pass
+
             user_res = supabase.auth.get_user()
             return getattr(user_res, "user", None)
+
     except Exception:
         return None
+
     return None
 
 
@@ -52,6 +70,9 @@ def sign_out_user():
         pass
 
 
+# =========================
+# CLIENTS
+# =========================
 def get_clients(user_id):
     try:
         res = (
@@ -89,6 +110,9 @@ def delete_client(client_id):
     )
 
 
+# =========================
+# AUDIT RUNS
+# =========================
 def save_audit(user_id, client_id, file_name, selected_metrics, anomaly_count, risk_label):
     return (
         supabase.table("audit_runs")
@@ -114,14 +138,20 @@ def get_recent_runs(user_id, client_id=None):
             .eq("user_id", user_id)
             .order("created_at", desc=True)
         )
+
         if client_id:
             query = query.eq("client_id", client_id)
+
         res = query.limit(10).execute()
         return res.data or []
+
     except Exception:
         return []
 
 
+# =========================
+# TEAM MEMBERS
+# =========================
 def get_team_members(client_id):
     try:
         res = (
@@ -151,6 +181,14 @@ def invite_team_member(client_id, owner_user_id, email, role):
     )
 
 
+# 🔥 REAL EMAIL INVITE (IMPORTANT)
+def invite_user_by_email(email):
+    try:
+        return supabase_admin.auth.admin.invite_user_by_email(email)
+    except Exception as e:
+        raise Exception(f"Invite failed: {e}")
+
+
 def delete_team_member(member_id):
     return (
         supabase.table("client_members")
@@ -160,6 +198,9 @@ def delete_team_member(member_id):
     )
 
 
+# =========================
+# BILLING
+# =========================
 def get_billing_status(user_id):
     try:
         res = (
